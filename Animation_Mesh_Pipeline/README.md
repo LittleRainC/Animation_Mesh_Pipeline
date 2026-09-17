@@ -23,7 +23,7 @@ Animation_Mesh_Pipeline/
 ## 总览
 
 ```
-角色包（单角色 或 多角色根目录）
+角色包（ModelWithAnimationSelected：单角色 或 多角色根）
   → ① 插针导出 clean.fbx
   → ② 对 clean 写 dirty{强度}.fbx
   → mesh_retopo_data_preproc（外部）→ dirty*.ply（feature + label）
@@ -38,39 +38,43 @@ Animation_Mesh_Pipeline/
 
 ## 输入约定（多角色 / 单角色）
 
-Stage ① 的 `--input_dir` 支持两种用法，CLI 不变：
+Stage ① 的 `--input_dir` 读取 **ModelWithAnimationSelected** 布局：
 
 ### 多角色（推荐）
 
-传**角色包的上级目录**。每个子文件夹是一个角色，内含 `mesh.fbx` + 该角色动画 FBX：
+传数据集根目录。每个子文件夹是一个角色：
 
 ```
-input_animation_fbx/          ← --input_dir
-├── 06f/
-│   ├── mesh.fbx
-│   ├── Walk.fbx
-│   └── ...
-├── CharacterB/
-│   ├── mesh.fbx
-│   └── ...
-└── CharacterC/
-    └── ...
+ModelWithAnimationSelected/          ← --input_dir
+├── dataset_manifest.json            （可选，脚本忽略）
+├── Aj/
+│   ├── Aj.fbx                       # 角色模型（蒙皮网格 + 骨架）
+│   └── animations/
+│       ├── Back_Flip_To_Uppercut.fbx
+│       ├── Bartending.fbx
+│       └── ...
+├── Arissa/
+│   ├── Arissa.fbx
+│   └── animations/
+│       └── ...
+└── ...
 ```
 
 ### 单角色
 
-直接传**单个角色目录**（如 `06f/`）：
+直接传单个角色目录：
 
 ```
-06f/                          ← --input_dir
-├── mesh.fbx
-├── Walk.fbx
-└── ...
+Aj/                                  ← --input_dir
+├── Aj.fbx
+└── animations/
+    └── ...
 ```
 
-脚本会自动识别：有一级角色子目录 → 多角色；目录本身含 `mesh.fbx` / `*.fbx` → 单角色。
-
-`mesh.fbx` 找不到时，会扫描目录里第一个带 MESH 的 FBX。
+规则：
+- 角色模型：优先 `{目录名}.fbx`，否则用根目录第一个含 MESH 的 FBX
+- 动画：只读 `animations/*.fbx`（不扫角色根目录下的其它 FBX）
+- 有一级合法角色子目录 → 多角色；目录本身就是角色包 → 单角色
 
 ---
 
@@ -80,7 +84,7 @@ input_animation_fbx/          ← --input_dir
 
 ```bash
 Blender --background --python stage1_sample/batch_animation_frame_sampler.py -- \
-  --input_dir ".../Data/animation_fbx/input_animation_fbx" \
+  --input_dir ".../Mixamo_Data/ModelWithAnimationSelected" \
   --output_dir ".../Data/output_animation_frames" \
   --max_armatures 50 \
   --frame_gap 20
@@ -88,14 +92,14 @@ Blender --background --python stage1_sample/batch_animation_frame_sampler.py -- 
 
 | 参数 | 默认 | 说明 |
 |------|------|------|
-| `--input_dir` | `Data/.../input_animation_fbx` | 多角色根，或单角色目录 |
+| `--input_dir` | `Mixamo_Data/ModelWithAnimationSelected` | 多角色根，或单角色目录 |
 | `--output_dir` | `Data/output_animation_frames` | 导出根 |
 | `--max_characters` | all | 处理多少个角色；`<0` = 全部 |
 | `--character_start` | `0` | 跳过前 N 个角色 |
-| `--max_armatures` | `50` | 每个角色采样多少个 armature；`<0` = 全部 |
+| `--max_armatures` | `50` | 每个角色采样多少个动画；`<0` = 全部 |
 | `--armature_start` | `0` | 每个角色跳过前 N 个动画 |
 | `--frame_gap` | `20` | 帧间隔（插针） |
-| `--shuffle` | off | 随机抽 armature，而不是按文件名 |
+| `--shuffle` | off | 随机抽动画，而不是按文件名 |
 | `--export_format` | `fbx` | `fbx` / `obj` / `ply` |
 
 也可改脚本顶部常量：`MAX_CHARACTERS`、`MAX_ARMATURES`、`FRAME_GAP`、`SHUFFLE_ARMATURES`。
@@ -104,17 +108,15 @@ Blender --background --python stage1_sample/batch_animation_frame_sampler.py -- 
 
 ```
 output/
-├── 06f/
-│   ├── Walk_1/clean.fbx
-│   ├── Walk_21/clean.fbx
-│   └── Idle_1/clean.fbx
-├── CharacterB/
+├── Aj/
+│   ├── Back_Flip_To_Uppercut_1/clean.fbx
+│   ├── Bartending_1/clean.fbx
+│   └── ...
+├── Arissa/
 │   └── ...
 ├── run_log.txt
 └── error_log.txt
 ```
-
-单角色时根下只有一个角色名子目录（或与输入文件夹同名）。
 
 ---
 

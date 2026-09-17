@@ -1,26 +1,25 @@
 """
 Batch Animation Frame Sampler (bpy).
 
-多人物输入布局（推荐）：
-  input_dir/                 ← 传 06f 的上级目录
-    ├── CharacterA/
-    │   ├── mesh.fbx
-    │   ├── Walk.fbx
-    │   └── ...
-    └── CharacterB/
-        ├── mesh.fbx
-        └── ...
+输入布局（ModelWithAnimationSelected）：
+  input_dir/                         ← 多角色根，或单个角色目录
+    ├── dataset_manifest.json        （可选，忽略）
+    ├── Aj/
+    │   ├── Aj.fbx                   # 角色模型（蒙皮网格 + 骨架）
+    │   └── animations/
+    │       ├── Walk.fbx
+    │       └── ...
+    └── Arissa/
+        ├── Arissa.fbx
+        └── animations/
+            └── ...
 
-对每个角色子目录：找带 mesh 的 FBX → 套其余 armature → 按帧间隔插针导出 clean。
-
-可调：
-  --max_characters  处理多少个角色
-  --max_armatures   每个角色采样多少个 armature 动画
-  --frame_gap       帧采样间隔（插针间隔）
+对每个角色：加载根目录角色 FBX → 把 animations/ 里的 Action 赋到角色骨架
+→ 按 frame_gap 插针导出 clean。
 
 用法（Blender background）:
   Blender --background --python stage1_sample/batch_animation_frame_sampler.py -- \\
-    --input_dir "/path/to/input_animation_fbx" \\
+    --input_dir "/path/to/ModelWithAnimationSelected" \\
     --output_dir "/path/to/out" \\
     --max_armatures 50 \\
     --frame_gap 20
@@ -42,12 +41,13 @@ import bpy
 # =========================
 SCRIPT_DIR = Path(__file__).resolve().parent
 PIPELINE_ROOT = SCRIPT_DIR.parent
-PROJECT_ROOT = PIPELINE_ROOT.parent.parent
+# stage1_sample → Animation_Mesh_Pipeline → Animation_Mesh_Pipeline → Scripts → Data_Processing
+PROJECT_ROOT = PIPELINE_ROOT.parent.parent.parent
 
-DEFAULT_INPUT_DIR = PROJECT_ROOT / "Data" / "animation_fbx" / "input_animation_fbx"
+DEFAULT_INPUT_DIR = PROJECT_ROOT / "Mixamo_Data" / "ModelWithAnimationSelected"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "Data" / "output_animation_frames"
 
-MESH_FBX_CANDIDATES = ("mesh.fbx", "Mesh.fbx", "MESH.fbx")
+ANIMATIONS_SUBDIR = "animations"
 FRAME_GAP = 20
 MAX_CHARACTERS = None  # None / <0 = 全部角色子目录
 CHARACTER_START = 0
@@ -151,27 +151,52 @@ def probe_fbx_has_mesh(fbx_path: Path) -> bool:
         delete_objects(imported)
 
 
-def dir_has_named_mesh_fbx(character_dir: Path) -> bool:
-    return any((character_dir / name).is_file() for name in MESH_FBX_CANDIDATES)
+def character_root_fbx_files(character_dir: Path) -> list[Path]:
+    """角色根目录下的 *.fbx（不含 animations/ 子目录）。"""
+    return sorted(
+        p for p in character_dir.glob("*.fbx") if p.is_file()
+    )
+
+
+def animations_dir(character_dir: Path) -> Path:
+    return character_dir / ANIMATIONS_SUBDIR
+
+
+def is_character_package(character_dir: Path) -> bool:
+    """角色包：根目录有角色 FBX，且 animations/ 下有动画 FBX。"""
+    if not character_dir.is_dir():
+        return False
+    if not character_root_fbx_files(character_dir):
+        return False
+    anim_dir = animations_dir(character_dir)
+    return anim_dir.is_dir() and any(anim_dir.glob("*.fbx"))
 
 
 def find_mesh_fbx(character_dir: Path) -> Path:
-    """优先按固定文件名找 mesh.fbx；否则扫描目录中第一个带 MESH 的 FBX。"""
-    for name in MESH_FBX_CANDIDATES:
-        candidate = character_dir / name
-        if candidate.is_file():
-            if probe_fbx_has_mesh(candidate):
-                log(f"Mesh FBX (by name): {candidate.name}")
-                return candidate
-            raise RuntimeError(
-                f"Found {candidate.name}, but import contains no MESH objects."
-            )
+    """
+    找角色模型 FBX：优先 {目录名}.fbx，否则根目录第一个含 MESH 的 FBX。
+    不扫描 animations/。
+    """
+    preferred = character_dir / f"{character_dir.name}.fbx"
+    if preferred.is_file():
+        if probe_fbx_has_mesh(preferred):
+            log(f"Mesh FBX (by folder name): {preferred.name}")
+            return preferred
+        raise RuntimeError(
+            f"Found {preferred.name}, but import contains no MESH objects."
+        )
 
-    fbx_files = sorted(character_dir.glob("*.fbx"))
+    fbx_files = character_root_fbx_files(character_dir)
     if not fbx_files:
-        raise FileNotFoundError(f"No FBX files in: {character_dir}")
+        raise FileNotFoundError(
+            f"No character FBX in root of: {character_dir} "
+            f"(expected e.g. {character_dir.name}.fbx)"
+        )
 
-    log(f"mesh.fbx not found; probing {len(fbx_files)} FBX files for mesh...")
+    log(
+        f"{character_dir.name}.fbx not found; "
+        f"probing {len(fbx_files)} root FBX file(s) for mesh..."
+    )
     for fbx_path in fbx_files:
         if probe_fbx_has_mesh(fbx_path):
             log(f"Mesh FBX (auto-detect): {fbx_path.name}")
@@ -180,40 +205,35 @@ def find_mesh_fbx(character_dir: Path) -> Path:
     raise RuntimeError(f"No FBX with MESH objects found in: {character_dir}")
 
 
-def collect_armature_fbx_files(character_dir: Path, mesh_fbx: Path) -> list[Path]:
-    """角色目录内除 mesh FBX 外的全部动画 FBX。"""
-    mesh_resolved = mesh_fbx.resolve()
-    return [
-        p
-        for p in sorted(character_dir.glob("*.fbx"))
-        if p.resolve() != mesh_resolved
-    ]
+def collect_armature_fbx_files(character_dir: Path, mesh_fbx: Path | None = None) -> list[Path]:
+    """角色 animations/ 子目录内的全部动画 FBX。"""
+    _ = mesh_fbx  # 角色根与动画目录已分离
+    anim_dir = animations_dir(character_dir)
+    if not anim_dir.is_dir():
+        raise FileNotFoundError(f"Missing animations/ under: {character_dir}")
+    return sorted(p for p in anim_dir.glob("*.fbx") if p.is_file())
 
 
 def discover_character_dirs(input_dir: Path) -> list[tuple[str, Path]]:
     """
     发现角色目录列表，返回 (角色名, 路径)。
 
-    优先：input_dir 下的一级子目录（每个含 *.fbx）。
-    兼容：若 input_dir 本身就是单角色目录（含 mesh.fbx / *.fbx），则只返回自身。
+    多角色：input_dir 下一级子目录，每个含 {Name}.fbx + animations/*.fbx。
+    单角色：input_dir 本身就是角色包。
     """
     subdirs = sorted(
         [
             p
             for p in input_dir.iterdir()
-            if p.is_dir() and not p.name.startswith(".") and list(p.glob("*.fbx"))
+            if p.is_dir() and not p.name.startswith(".") and is_character_package(p)
         ],
         key=lambda p: p.name.lower(),
     )
 
     if subdirs:
-        # Prefer folders that already have mesh.fbx; keep others too (auto-detect later)
-        named = [p for p in subdirs if dir_has_named_mesh_fbx(p)]
-        others = [p for p in subdirs if p not in named]
-        ordered = named + others
-        return [(sanitize_name(p.name), p) for p in ordered]
+        return [(sanitize_name(p.name), p) for p in subdirs]
 
-    if list(input_dir.glob("*.fbx")):
+    if is_character_package(input_dir):
         return [(sanitize_name(input_dir.name), input_dir)]
 
     return []
@@ -543,7 +563,7 @@ def process_character(
 
     if not armature_files:
         raise FileNotFoundError(
-            f"No animation armature FBX found in: {character_dir}"
+            f"No animation FBX found under: {animations_dir(character_dir)}"
         )
 
     log(f"Character: {character_name}")
@@ -627,7 +647,8 @@ def run_pipeline(
 
     if not character_entries:
         raise FileNotFoundError(
-            f"No character folders (with *.fbx) found under: {in_path}"
+            f"No character packages found under: {in_path}\n"
+            f"Expected: <char>/<Name>.fbx + <char>/animations/*.fbx"
         )
 
     log("Pipeline started (multi-character)")
@@ -716,14 +737,17 @@ def parse_args():
 
     parser = argparse.ArgumentParser(
         description=(
-            "Multi-character: sample deformed clean meshes from "
-            "input_dir/<character>/{mesh.fbx + armature FBXs}"
+            "Sample deformed clean meshes from "
+            "input_dir/<character>/{Name}.fbx + animations/*.fbx"
         )
     )
     parser.add_argument(
         "--input_dir",
         default=str(DEFAULT_INPUT_DIR),
-        help="Root folder of character subdirs (parent of 06f), or a single character folder",
+        help=(
+            "ModelWithAnimationSelected root, or a single character folder "
+            "with {Name}.fbx + animations/"
+        ),
     )
     parser.add_argument(
         "--output_dir",
