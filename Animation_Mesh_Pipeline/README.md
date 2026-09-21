@@ -4,8 +4,8 @@
 
 产出 `clean.fbx` + `dirty*.fbx` 后，交给 `lab/perface-data-preproc-pipeline/mesh_retopo_data_preproc` 做 **FBX → 带 feature/label 的训练用 PLY**（本 pipeline 不再做几何 PLY 转换）。
 
-> **本目录为当前维护的正式 pipeline。**  
-> `Scripts/Mesh_Clean_To_Dirty/` 为早期一体式试验脚本，不再维护。
+> **本目录为当前维护的正式 clean → dirty pipeline。**  
+> 动画筛选（~2000 → ~200）在 [`Scripts/Mesh_Clean_To_Dirty/`](../../Mesh_Clean_To_Dirty/)（只放筛选 / 组包脚本）。
 
 ```
 Animation_Mesh_Pipeline/
