@@ -56,6 +56,7 @@ ARMATURE_START = 0
 EXPORT_FORMAT = "fbx"  # fbx | obj | ply
 ACTIONS_PER_RESET = 50
 SHUFFLE_ARMATURES = False  # True = 随机抽 N 个；False = 按文件名排序截取
+RANDOM_SEED = 42
 
 RUN_LOG_PATH: str | None = None
 
@@ -626,6 +627,7 @@ def run_pipeline(
     armature_start: int = ARMATURE_START,
     export_format: str = EXPORT_FORMAT,
     shuffle_armatures: bool = SHUFFLE_ARMATURES,
+    random_seed: int = RANDOM_SEED,
 ) -> None:
     in_path = Path(bpy.path.abspath(input_dir)).expanduser().resolve()
     out_path = Path(bpy.path.abspath(output_dir)).expanduser().resolve()
@@ -634,6 +636,7 @@ def run_pipeline(
         raise FileNotFoundError(f"INPUT_DIR does not exist: {in_path}")
 
     out_path.mkdir(parents=True, exist_ok=True)
+    random.seed(int(random_seed))
     global RUN_LOG_PATH
     RUN_LOG_PATH = str(out_path / "run_log.txt")
     error_log_path = out_path / "error_log.txt"
@@ -661,7 +664,7 @@ def run_pipeline(
     )
     log(
         f"Per-character armatures: start={armature_start}, "
-        f"max={max_armatures}, shuffle={shuffle_armatures}"
+        f"max={max_armatures}, shuffle={shuffle_armatures}, seed={random_seed}"
     )
 
     chars_ok = 0
@@ -795,6 +798,12 @@ def parse_args():
         action="store_true",
         help="Randomly sample armatures instead of sorted order",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=RANDOM_SEED,
+        help="Random seed used by --shuffle (default: 42)",
+    )
     return parser.parse_args(argv)
 
 
@@ -818,6 +827,7 @@ def main_cli() -> None:
         armature_start=int(args.armature_start),
         export_format=args.export_format,
         shuffle_armatures=bool(args.shuffle),
+        random_seed=int(args.seed),
     )
 
 
@@ -838,6 +848,7 @@ def main_interactive() -> None:
         armature_start=ARMATURE_START,
         export_format=EXPORT_FORMAT,
         shuffle_armatures=SHUFFLE_ARMATURES,
+        random_seed=RANDOM_SEED,
     )
 
 

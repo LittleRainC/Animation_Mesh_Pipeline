@@ -15,7 +15,9 @@ Batch apply dirty topology to previously sampled clean meshes (bpy).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
+import random
 import sys
 import traceback
 from dataclasses import replace
@@ -38,6 +40,7 @@ from dirty_topology_core import DirtyParams, apply_dirty_topology_to_mesh
 # 每帧各强度各出 1 份；文件名 dirty{强度}.fbx
 DEFAULT_DISPLACE_STRENGTHS = (10.0, 20.0, 40.0, 70.0, 100.0)
 EXPORT_FORMAT = "fbx"  # 仅处理同格式文件；输出同格式
+RANDOM_SEED = 42
 PARAMS = DirtyParams(
     displace_scale=0.002,
     displace_strength=100.0,
@@ -181,12 +184,26 @@ def process_clean_file(
     strengths: list[float],
     base_params: DirtyParams,
     export_format: str,
+    skip_existing: bool = False,
+    random_seed: int = RANDOM_SEED,
 ) -> int:
     if not strengths:
         return 0
 
     written = 0
     for strength in strengths:
+        label = strength_label(strength)
+        out_path = clean_path.parent / f"dirty{label}.{export_format}"
+        if skip_existing and out_path.is_file():
+            continue
+
+        # Stable per-output seed makes interruption/resume reproducible.
+        seed_key = f"{random_seed}:{clean_path.as_posix()}:{float(strength)}"
+        file_seed = int.from_bytes(
+            hashlib.sha256(seed_key.encode("utf-8")).digest()[:8],
+            byteorder="little",
+        )
+        random.seed(file_seed)
         params = replace(base_params, displace_strength=float(strength))
         clear_scene()
         mesh_objects = import_mesh_file(clean_path)
@@ -202,8 +219,6 @@ def process_clean_file(
             obj.select_set(True)
         bpy.context.view_layer.objects.active = mesh_objects[0]
 
-        label = strength_label(strength)
-        out_path = clean_path.parent / f"dirty{label}.{export_format}"
         export_selected_meshes(out_path, export_format)
         written += 1
 
@@ -215,12 +230,15 @@ def run_pipeline(
     displace_strengths: list[float] | None = None,
     export_format: str = EXPORT_FORMAT,
     params: DirtyParams | None = None,
+    random_seed: int = RANDOM_SEED,
+    skip_existing: bool = False,
 ) -> None:
     in_path = Path(bpy.path.abspath(input_dir)).expanduser().resolve()
     if not in_path.is_dir():
         raise FileNotFoundError(f"INPUT_DIR does not exist: {in_path}")
 
     params = params or PARAMS
+    random.seed(int(random_seed))
     strengths = (
         list(displace_strengths)
         if displace_strengths is not None
@@ -244,7 +262,8 @@ def run_pipeline(
     log(
         f"displace_scale={params.displace_scale}, "
         f"merge={params.enable_random_merge}@{params.merge_edge_ratio}, "
-        f"disease={params.enable_local_disease} centers={params.disease_centers}"
+        f"disease={params.enable_local_disease} centers={params.disease_centers}, "
+        f"seed={random_seed}"
     )
 
     ok = 0
@@ -253,7 +272,12 @@ def run_pipeline(
         try:
             log(f"[{idx}/{len(clean_files)}] {clean_path.relative_to(in_path)}")
             total_written += process_clean_file(
-                clean_path, strengths, params, export_format
+                clean_path,
+                strengths,
+                params,
+                export_format,
+                skip_existing=skip_existing,
+                random_seed=random_seed,
             )
             ok += 1
         except Exception as exc:
@@ -298,6 +322,12 @@ def parse_args():
     )
     parser.add_argument("--no_merge", action="store_true")
     parser.add_argument("--no_disease", action="store_true")
+    parser.add_argument("--seed", type=int, default=RANDOM_SEED)
+    parser.add_argument(
+        "--skip_existing",
+        action="store_true",
+        help="Keep existing dirty files and only generate missing outputs",
+    )
     return parser.parse_args(argv)
 
 
@@ -323,6 +353,8 @@ def main() -> None:
         displace_strengths=strengths,
         export_format=args.export_format,
         params=params,
+        random_seed=args.seed,
+        skip_existing=args.skip_existing,
     )
 
 
